@@ -1,0 +1,156 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Danielle"
+date: "December 23, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,fig.width=12, fig.height=8, fig.align='center', fig.path='Figs/')
+```
+
+## Overview
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, our goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. 
+
+## R Libraries
+```{r}
+library(RCurl)
+library(caret)
+library(randomForest)
+library(ggplot2)
+library(gbm)
+library(corrplot)
+library(plyr)
+library(MASS)
+```
+
+##  Data Loading
+Load data from url
+```{r}
+trainFile <- getURL('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv', ssl.verifyhost=FALSE, ssl.verifypeer=FALSE)
+testFile <- getURL('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv', ssl.verifyhost=FALSE, ssl.verifypeer=FALSE)
+
+# ensure the results are repeatable
+set.seed(7)
+trainSet <- read.csv(textConnection(trainFile), header=T, na.strings=c("NA", "#DIV/0!"))
+testSet <- read.csv(textConnection(testFile), header=T, na.strings=c("NA", "#DIV/0!"))
+
+```
+
+## Data Preprocessing
+
+First split the train dataset to training and testing based on 70% : 30% ratio
+```{r}
+inTrain <- createDataPartition(trainSet$classe,p=0.70, list=FALSE)
+training <- trainSet[inTrain,]
+testing <- trainSet[-inTrain,]
+
+#move "classe" column to the first column
+
+training<-training[,c(which(colnames(training)=="classe"),which(colnames(training)!="classe"))]
+testing<-testing[,c(which(colnames(testing)=="classe"),which(colnames(testing)!="classe"))]
+dim(training)
+```
+And then remove columns with Near Zero variance
+
+```{r}
+training <- training[,-nearZeroVar(training[,-1])]
+testing <- testing[,-nearZeroVar(testing[,-1])]
+dim(training)
+```
+Some columns have lots of NAs. There columns need to be removed as well.
+
+```{r}
+#remove columns that have 10% NAs
+pct_na <- unlist(lapply(training, function(x) mean(is.na(x))))
+training <- training[,names(which(pct_na <= .9))]
+testing <- testing[,names(which(pct_na <= .9))]
+dim(training)
+```
+
+The columns "x", "user_name", "raw_timestamp_part_1","raw_timestamp_part_2", "new_window", "num_window" are user information and can be removed
+```{r}
+training <- training[,-c(2:7)]
+testing <- testing[,-c(2:7)]
+dim(training)
+```
+
+## Covariate Creation/Feature Extraction
+Some attributes are highly correlated. The color intensity and the size of the circle in the following chart are proportional to the correlation coefficients. 
+```{r}
+#corrplot(cor(training[,-1]), order = "FPC", method = "color", type = "lower", 
+#         tl.cex = 0.8, tl.col = rgb(0, 0, 0))
+corrplot(cor(training[,-1]), type = "lower", order = "hclust", tl.col = "black", tl.srt = 45)
+```
+
+We will find the attributes that are highly correlated (ideally >0.75) and remove them from the dataset. 
+```{r}
+training.cor <- cor(training[,-1])
+highlyCor <- findCorrelation(training.cor, cutoff = .75, verbose=TRUE,names=FALSE)
+col_keep <- names(training)[!(names(training) %in% colnames(training.cor)[highlyCor])]
+training <- training[,col_keep]
+testing <- testing[,col_keep]
+dim(training)
+```
+
+The attribute correlation chart looks much better after removing these corrected attributes.
+```{r}
+#corrplot(cor(training[,-1]), order = "FPC", method = "color", type = "lower", tl.cex = 0.8, tl.col = rgb(0, 0, 0))
+corrplot(cor(training[,-1]), type = "lower", order = "hclust", tl.col = "black", tl.srt = 45)
+```
+
+
+## Model Selection
+We are going to use Random Forest (rf), Boosting with Trees (gbm) and Linear Discriminant Analysis (lda) methods to model the training data. And then use cross validation dataset to estimate their accuracy.
+
+###1. Random Forest
+```{r}
+set.seed(355)
+# apply random forest
+controlRF <- trainControl(method="cv", number=3, verboseIter=FALSE)
+train.rf <- train(classe ~ ., data=training, method="rf", trControl=controlRF)
+train.rf$finalModel
+# apply fitted model to test data
+test.rf <- predict(train.rf, testing)
+# compare results
+cm_rf <-confusionMatrix(testing$classe,test.rf)
+print(cm_rf)
+```
+
+####2. Boosting with Trees
+```{r}
+# apply gbm
+train.gbm <- train(classe ~ ., data=training, method="gbm",verbose=F)
+# apply fitted model to test data
+test.gbm <- predict(train.gbm, testing)
+# compare results
+cm_gbm <-confusionMatrix(testing$classe,test.gbm)
+print(cm_gbm)
+```
+
+
+####3. Linear Discriminant Analysis
+```{r}
+# apply lda
+train.lda <- train(classe ~ ., data=training, method="lda",verbose=FALSE)
+# apply fitted model to test data
+test.lda <- predict(train.lda, testing)
+# compare results
+cm_lda <-confusionMatrix(testing$classe,test.lda)
+print(cm_lda)
+```
+## Result
+
+The accuracy comparison of each model below indicates that the random forest has the highest accuracy. Therefore it will be used for the test set prediction.
+```{r}
+rbind(Accuracy = c(rf = cm_rf$overall[1], gbm = cm_gbm$overall[1],lda = cm_lda$overall[1]))
+```
+
+## Apply selected machine learning algorithm to the 20 test cases
+
+```{r}
+testCases <- predict(train.rf, newdata=testSet)
+print(testCases)
+```
+
+
